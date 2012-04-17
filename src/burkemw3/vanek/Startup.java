@@ -29,34 +29,41 @@ import com.amazonaws.services.s3.model.StorageClass;
 
 public class Startup {
 	private static class CliOptions {
+		static String BUCKET_NAME = "bucket-name";
+		static String FOLDER_PATH = "folder-path";
 		static String FORCE_UPLOAD = "force-upload";
 	}
 	public static void main(String[] arguments) throws IOException {
 		AmazonS3 s3 = connectToS3();
 		
 		Options options = new Options();
+		options.addOption("b", CliOptions.BUCKET_NAME,	true, "bucket name");
+		options.addOption("p", CliOptions.FOLDER_PATH,	true, "folder path");
 		options.addOption("f", CliOptions.FORCE_UPLOAD,	false, "always upload");
 		
 		CommandLineParser parser = new GnuParser();
 	    try {
-	        // parse the command line arguments
 	        CommandLine line = parser.parse(options, arguments);
-	        boolean forceUpdate = line.hasOption(CliOptions.FORCE_UPLOAD);
 	        
-	        String[] remainingArguments = line.getArgs();
-	        if (remainingArguments.length != 1) {
-	        	throw new ParseException("Expecting a bucket name");
+	        String bucketName = line.getOptionValue("b");
+	        if (bucketName == null) {
+	        	throw new ParseException("Bucket name must be specified");
 	        }
 	        
-	        String bucketName = remainingArguments[0];
+	        String folderPath = line.getOptionValue("p");
+	        if (folderPath == null) {
+	        	throw new ParseException("Folder path must be specified");
+	        }
+	        
+	        boolean forceUpdate = line.hasOption(CliOptions.FORCE_UPLOAD);
 	        
             ensureBucketExists(s3, bucketName);
 	        
 	        Set<File> files = getWorkingDirectoryJpegs();
 	        
-	        uploadFiles(s3, bucketName, files, forceUpdate);
+	        uploadFiles(s3, bucketName, folderPath, files, forceUpdate);
 			
-	        createAndUploadZipFile(s3, bucketName, files);
+	        createAndUploadZipFile(s3, bucketName, folderPath, files);
 	    } catch(ParseException exp) {
 	        System.err.println("Parsing failed. Reason: " + exp.getMessage());
 	    }
@@ -78,7 +85,6 @@ public class Startup {
 			System.out.format("Creating bucket: %s\n", bucketName);
 		    s3.createBucket(bucketName);
 		}
-		throw new RuntimeException("Grant everybody access");
 	}
 	
 	private static Set<File> getWorkingDirectoryJpegs() {
@@ -106,7 +112,7 @@ public class Startup {
         return files;
 	}
 	
-	private static void uploadFiles(AmazonS3 s3, String bucketName,
+	private static void uploadFiles(AmazonS3 s3, String bucketName, String folderPath,
 			Set<File> files, boolean overwriteExistingFiles) throws IOException {
         Set<String> existingKeys = new HashSet<String>();
         ListObjectsRequest listObjectsRequest = new ListObjectsRequest().withBucketName(bucketName);
@@ -121,8 +127,8 @@ public class Startup {
     	System.out.format("Uploading %d files\n", total);
         for (File file : files) {
     		System.out.format("Uploading %d of %d (%d already existed)\r", done+1, total, skipped);
-            String key = file.getName();
-        	if (false == overwriteExistingFiles && false == existingKeys.contains(key)) {
+    		String key = String.format("%s/%s", folderPath, file.getName());
+        	if (true == overwriteExistingFiles || false == existingKeys.contains(key)) {
         		PutObjectRequest putRequest = new PutObjectRequest(bucketName, key, file);
         		putRequest.setStorageClass(StorageClass.ReducedRedundancy);
         		s3.putObject(putRequest);
@@ -135,10 +141,11 @@ public class Startup {
 	}
 
 	private static void createAndUploadZipFile(AmazonS3 s3, String bucketName,
-			Set<File> files) throws IOException {
+			String folderPath, Set<File> files) throws IOException {
 		File zipFile = createZipFile(files);
 		System.out.print("uploading zip...");
-		s3.putObject(new PutObjectRequest(bucketName, zipFile.getName(), zipFile));
+		String key = String.format("%s/%s", folderPath, zipFile.getName());
+		s3.putObject(new PutObjectRequest(bucketName, key, zipFile));
 		System.out.println("done.");
 		zipFile.delete();
 	}
@@ -171,12 +178,3 @@ public class Startup {
 		return file;
 	}
 }
-
-/* Other cool features
- * - multipart zip file upload
- * - upload smaller resizes files
- * - create html page to view and download
- * - generate sharing email
- * - delete an S3 directory
- * - schedule deletion of an S3 directory
- */
