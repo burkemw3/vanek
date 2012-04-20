@@ -1,12 +1,10 @@
 To Do
 =====
-- Upload to reduced redundancy
-- Set permissions on uploads
-- Don't upload individual images
-- Multipart ZIP file upload http://docs.amazonwebservices.com/AmazonS3/latest/dev/HLuploadFileJava.html
-- Generate sharing email
+- Set expiration date with http://docs.amazonwebservices.com/AmazonS3/latest/dev/ObjectExpiration.html and BucketLifecycleConfiguration
 - Create usable executable
+- Show upload progress
 - Check parameter values
+- Check for images, hidden files, etc.
 
 Possibilities
 =============
