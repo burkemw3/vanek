@@ -81,15 +81,19 @@ public class Startup {
                 throw new ParseException("Bucket name must be specified");
             }
 
+            String directory = line.getOptionValue(CliOptions.DIRECTORY);
+
             String albumName = line.getOptionValue(CliOptions.ALBUM_NAME);
             if (albumName == null) {
-                throw new ParseException("Album name must be specified");
-            } else if (albumName.matches("[^A-Za-z0-9_-]")) {
+                File file = new File(directory);
+                albumName = file.getName();
+                System.out.format("Album name not specified, using directory name: %s", albumName);
+            }
+            if (albumName.matches("[^A-Za-z0-9_-]")) {
                 throw new ParseException(
                         "Album name can only contain numbers, letters, hyphens, and underscores");
             }
 
-            String directory = line.getOptionValue(CliOptions.DIRECTORY);
             Collection<File> files = getJpegsInDirectory(directory);
 
             ensureBucketExists(s3, bucketName);
