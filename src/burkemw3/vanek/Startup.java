@@ -53,6 +53,7 @@ public class Startup {
     private static final String PicturesPrefix = "pictures";
 
     private static TransferManager _transferManager;
+    private static Collection<Upload> _uploads = new ArrayList<Upload>();
 
     public static void main(String[] arguments) throws IOException,
             AmazonServiceException, AmazonClientException, InterruptedException {
@@ -99,6 +100,12 @@ public class Startup {
             createAndUploadGalleryImages(s3, bucketName, albumName, files);
             String galleryKeyName = createAndUploadGallery(s3, bucketName, albumName, zipKeyName, files);
 
+            System.out.print("Waiting for uploads to finish...");
+            for (Upload upload : _uploads) {
+                upload.waitForCompletion();
+            }
+            System.out.println("done.");
+
             generateSharingLink(bucketName, galleryKeyName);
         } catch (ParseException exp) {
             System.err.println("Parsing failed. Reason: " + exp.getMessage());
@@ -114,30 +121,24 @@ public class Startup {
 
     private static void createAndUploadGalleryImages(AmazonS3 s3, String bucketName, String albumName,
             Collection<File> files) throws IOException, InterruptedException {
-        System.out.format("Resizing and uploading %d files...", files.size());
+        System.out.print("Resizing images...");
         for (File fullsizeImage : files) {
-            try {
-                File galleryImage = resizeImage(fullsizeImage, Dimension.ANY, 2048);
-                String galleryImageKeyName = String.format("%s/%s/images/%s.jpg", PicturesPrefix, albumName,
-                        fullsizeImage.getName());
-                ObjectMetadata galleryImageMetadata = new ObjectMetadata();
-                galleryImageMetadata.setContentType("image/jpeg");
-                uploadFile(s3, bucketName, galleryImage, galleryImageKeyName, galleryImageMetadata);
+            fullsizeImage.deleteOnExit();
+            File galleryImage = resizeImage(fullsizeImage, Dimension.ANY, 2048);
+            String galleryImageKeyName = String.format("%s/%s/images/%s.jpg", PicturesPrefix, albumName,
+                    fullsizeImage.getName());
+            ObjectMetadata galleryImageMetadata = new ObjectMetadata();
+            galleryImageMetadata.setContentType("image/jpeg");
+            uploadFile(s3, bucketName, galleryImage, galleryImageKeyName, galleryImageMetadata);
 
-                File thumbnailImage = resizeImage(fullsizeImage, Dimension.HEIGHT, 66);
-                String thumbnailImageKeyName = String.format("%s/%s/thumbnails/%s.jpg", PicturesPrefix,
-                        albumName, fullsizeImage.getName());
-                ObjectMetadata thumbnailImageMetadata = new ObjectMetadata();
-                thumbnailImageMetadata.setContentType("image/jpeg");
-                uploadFile(s3, bucketName, thumbnailImage, thumbnailImageKeyName, thumbnailImageMetadata);
-            } catch (IOException e) {
-                if (null != fullsizeImage) {
-                    fullsizeImage.delete();
-                }
-                throw e;
-            }
+            File thumbnailImage = resizeImage(fullsizeImage, Dimension.HEIGHT, 66);
+            String thumbnailImageKeyName = String.format("%s/%s/thumbnails/%s.jpg", PicturesPrefix,
+                    albumName, fullsizeImage.getName());
+            ObjectMetadata thumbnailImageMetadata = new ObjectMetadata();
+            thumbnailImageMetadata.setContentType("image/jpeg");
+            uploadFile(s3, bucketName, thumbnailImage, thumbnailImageKeyName, thumbnailImageMetadata);
         }
-        System.out.println("done");
+        System.out.println("done.");
     }
 
     private static enum Dimension {
@@ -173,6 +174,7 @@ public class Startup {
         graphics.drawImage(src, 0, 0, width, height, null);
 
         File outputFile = File.createTempFile("images", ".jpg");
+        outputFile.deleteOnExit();
         ImageIO.write(destination, "jpeg", outputFile);
         src.flush();
         destination.flush();
@@ -192,21 +194,13 @@ public class Startup {
         }
         String zipfileUrl = getAmazonUrl(bucketName, zipKeyName);
         String html = String.format(_minifiedTemplate, albumName, imageHtml, zipfileUrl);
-        File file = null;
-        String galleryKeyName;
-        try {
-            file = File.createTempFile("gallery", ".html");
-            FileWriter writer = new FileWriter(file);
-            writer.write(html.toString());
-            writer.close();
-            galleryKeyName = String.format("%s/%s/index.html", PicturesPrefix, albumName);
-            uploadFile(s3, bucketName, file, galleryKeyName, null);
-        } catch (IOException e) {
-            if (null != file) {
-                file.delete();
-            }
-            throw e;
-        }
+        File file = File.createTempFile("gallery", ".html");
+        file.deleteOnExit();
+        FileWriter writer = new FileWriter(file);
+        writer.write(html.toString());
+        writer.close();
+        String galleryKeyName = String.format("%s/%s/index.html", PicturesPrefix, albumName);
+        uploadFile(s3, bucketName, file, galleryKeyName, null);
 
         return galleryKeyName;
     }
@@ -215,8 +209,7 @@ public class Startup {
         return String.format("http://s3.amazonaws.com/%s/%s", bucketName, keyName);
     }
 
-    private static AmazonS3 connectToS3() throws FileNotFoundException,
-            IOException {
+    private static AmazonS3 connectToS3() throws FileNotFoundException, IOException {
         /* http://aws.amazon.com/security-credentials */
         String homeDirectoryPath = System.getProperty("user.home");
         String awsPropertiesPath = "AwsCredentials.properties";
@@ -224,6 +217,7 @@ public class Startup {
                 homeDirectoryPath + "/" + awsPropertiesPath);
         FileInputStream fi = new FileInputStream(awsCredentials);
         AmazonS3 s3 = new AmazonS3Client(new PropertiesCredentials(fi));
+        _transferManager = new TransferManager(s3);
         return s3;
     }
 
@@ -263,10 +257,6 @@ public class Startup {
 
     public static void uploadFile(AmazonS3 s3, String bucketName, File file, String keyName,
             ObjectMetadata metadata) throws InterruptedException {
-        if (_transferManager == null) {
-            _transferManager = new TransferManager(s3);
-        }
-
         PutObjectRequest put = new PutObjectRequest(bucketName, keyName, file);
 
         put.setStorageClass(StorageClass.ReducedRedundancy);
@@ -277,7 +267,7 @@ public class Startup {
         }
 
         Upload upload = _transferManager.upload(put);
-        upload.waitForCompletion();
+        _uploads.add(upload);
     }
 
     private static String createAndUploadZipFile(AmazonS3 s3, String bucketName,
@@ -297,59 +287,42 @@ public class Startup {
             }
         }
 
-        String zipFilePath = createZipFile(files);
-        File zipFile = new File(zipFilePath);
-        String zipKeyName;
-        try {
-            System.out.print("uploading zip...");
-
-            zipKeyName = String.format("%s/%s/%s.zip", PicturesPrefix, albumName, albumName);
-            ObjectMetadata metadata = new ObjectMetadata();
-            metadata.setContentType("application/zip");
-            uploadFile(s3, bucketName, zipFile, zipKeyName, metadata);
-
-            System.out.println("done.");
-        } finally {
-            zipFile.delete();
-        }
+        File zipFile = createZipFile(files);
+        String zipKeyName = String.format("%s/%s/%s.zip", PicturesPrefix, albumName, albumName);
+        ObjectMetadata metadata = new ObjectMetadata();
+        metadata.setContentType("application/zip");
+        uploadFile(s3, bucketName, zipFile, zipKeyName, metadata);
 
         return zipKeyName;
     }
 
     static final int ZIP_BUFFER_SIZE = 2048;
 
-    private static String createZipFile(Collection<File> files) throws IOException {
-        File file = null;
-        try {
-            file = File.createTempFile("images", ".zip");
-            FileOutputStream dest = new FileOutputStream(file);
-            BufferedOutputStream outStream = new BufferedOutputStream(dest);
-            ZipOutputStream out = new ZipOutputStream(outStream);
-            byte data[] = new byte[ZIP_BUFFER_SIZE];
-            int total = files.size();
-            System.out.format("Zipping %d files...", total);
-            for (File inputFile : files) {
-                FileInputStream fi = new FileInputStream(inputFile);
-                BufferedInputStream origin =
-                        new BufferedInputStream(fi, ZIP_BUFFER_SIZE);
-                ZipEntry entry = new ZipEntry(inputFile.getName());
-                out.putNextEntry(entry);
-                int count;
-                while ((count = origin.read(data, 0, ZIP_BUFFER_SIZE)) != -1) {
-                    out.write(data, 0, count);
-                }
-                origin.close();
+    private static File createZipFile(Collection<File> files) throws IOException {
+        File file = File.createTempFile("images", ".zip");
+        file.deleteOnExit();
+        FileOutputStream dest = new FileOutputStream(file);
+        BufferedOutputStream outStream = new BufferedOutputStream(dest);
+        ZipOutputStream out = new ZipOutputStream(outStream);
+        byte data[] = new byte[ZIP_BUFFER_SIZE];
+        int total = files.size();
+        System.out.format("Zipping %d files...", total);
+        for (File inputFile : files) {
+            FileInputStream fi = new FileInputStream(inputFile);
+            BufferedInputStream origin =
+                    new BufferedInputStream(fi, ZIP_BUFFER_SIZE);
+            ZipEntry entry = new ZipEntry(inputFile.getName());
+            out.putNextEntry(entry);
+            int count;
+            while ((count = origin.read(data, 0, ZIP_BUFFER_SIZE)) != -1) {
+                out.write(data, 0, count);
             }
-            out.close();
-            System.out.println("done");
-        } catch (IOException e) {
-            if (null != file) {
-                file.delete();
-            }
-            throw e;
+            origin.close();
         }
+        out.close();
+        System.out.println("done");
 
-        return file.getAbsolutePath();
+        return file;
     }
 
     private static void generateSharingLink(String bucketName, String galleryKeyName) {
