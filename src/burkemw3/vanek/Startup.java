@@ -87,7 +87,7 @@ public class Startup {
             if (albumName == null) {
                 File file = new File(directory);
                 albumName = file.getName();
-                System.out.format("Album name not specified, using directory name: %s", albumName);
+                System.out.format("Album name not specified, using directory name: %s\n", albumName);
             }
             if (albumName.matches("[^A-Za-z0-9_-]")) {
                 throw new ParseException(
